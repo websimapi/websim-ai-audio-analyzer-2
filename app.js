@@ -30,6 +30,7 @@ class App {
         this.micIcon = document.getElementById('mic-icon');
         this.statusText = document.getElementById('status-text');
         this.transcriptContainer = document.getElementById('transcript-content');
+        this.liveTranscript = document.getElementById('live-transcript');
         this.analysisBadge = document.getElementById('analysis-badge');
         this.visualizer = document.getElementById('visualizer');
         this.pitchDisplay = document.getElementById('pitch-display');
@@ -132,25 +133,22 @@ class App {
         this.recordedData.transcript.push(segmentData);
         this.addCommittedSegmentToUI(segmentData);
         
-        // Clear live preview explicitly
+        // Reset live preview to listening state
         this.updateLivePreview('');
     }
 
     updateLivePreview(text) {
-        let previewEl = document.getElementById('live-preview-text');
-        if (!previewEl) {
-            // Create if doesn't exist (it might be cleared)
-            previewEl = document.createElement('div');
-            previewEl.id = 'live-preview-text';
-            previewEl.className = 'live-preview';
-            this.transcriptContainer.appendChild(previewEl);
-        }
+        if (!this.liveTranscript) return;
         
-        if (!text) {
-            previewEl.remove();
+        if (text) {
+            this.liveTranscript.innerText = text;
+            this.liveTranscript.style.fontStyle = 'normal';
+        } else if (this.recording) {
+            this.liveTranscript.innerText = "Listening...";
+            this.liveTranscript.style.fontStyle = 'italic';
         } else {
-            previewEl.innerText = text + '...';
-            this.transcriptContainer.scrollTop = this.transcriptContainer.scrollHeight;
+            this.liveTranscript.innerText = "Ready to transcribe...";
+            this.liveTranscript.style.fontStyle = 'italic';
         }
     }
 
@@ -168,13 +166,7 @@ class App {
             <div>${segment.text}</div>
         `;
         
-        // Insert before the live preview if it exists
-        const previewEl = document.getElementById('live-preview-text');
-        if (previewEl) {
-            this.transcriptContainer.insertBefore(p, previewEl);
-        } else {
-            this.transcriptContainer.appendChild(p);
-        }
+        this.transcriptContainer.appendChild(p);
         this.transcriptContainer.scrollTop = this.transcriptContainer.scrollHeight;
     }
 
@@ -231,7 +223,11 @@ class App {
             this.recordBtn.classList.add('recording');
             this.micIcon.setAttribute('data-lucide', 'square');
             createIcons({ icons: { Square } });
+            
             this.statusText.innerText = "Recording... Speak clearly.";
+            this.liveTranscript.classList.add('active');
+            this.liveTranscript.innerText = "Listening...";
+            
             this.analysisBadge.classList.add('hidden');
             this.transcriptContainer.innerHTML = ''; // Clear previous
 
@@ -254,7 +250,10 @@ class App {
         this.recordBtn.classList.remove('recording');
         this.micIcon.setAttribute('data-lucide', 'mic');
         createIcons({ icons: { Mic } });
+        
         this.statusText.innerText = "Sending data to AI...";
+        this.liveTranscript.classList.remove('active');
+        this.liveTranscript.innerText = "Processing...";
 
         this.mediaRecorder.onstop = async () => {
             // const audioBlob = new Blob(this.audioChunks, { type: 'audio/wav' });
