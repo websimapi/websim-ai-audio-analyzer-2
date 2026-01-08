@@ -15,7 +15,6 @@ class App {
             pitchHistory: [],
             startTime: 0
         };
-        this.sessionTranscriptText = "";
 
         this.initUI();
         this.initSpeechRecognition();
@@ -55,28 +54,22 @@ class App {
         }
 
         this.speechRecognition = new SpeechRecognition();
-        this.speechRecognition.continuous = false; // Manual Continuous Loop strategy
+        // Set continuous to false to prevent buffer duplication bugs (Manual Continuous Loop strategy)
+        this.speechRecognition.continuous = false;
         this.speechRecognition.interimResults = true;
         this.speechRecognition.lang = 'en-US';
 
         this.speechRecognition.onresult = (event) => {
             let interimTranscript = '';
-            let finalInEvent = '';
 
             for (let i = event.resultIndex; i < event.results.length; ++i) {
-                const text = event.results[i][0].transcript;
                 if (event.results[i].isFinal) {
-                    finalInEvent += text;
+                    const text = event.results[i][0].transcript.trim();
+                    if (text) {
+                        this.processFinalSegment(text);
+                    }
                 } else {
-                    interimTranscript += text;
-                }
-            }
-
-            if (finalInEvent) {
-                const trimmed = finalInEvent.trim();
-                if (trimmed) {
-                    this.sessionTranscriptText += " " + trimmed;
-                    this.processFinalSegment(trimmed);
+                    interimTranscript += event.results[i][0].transcript;
                 }
             }
 
@@ -84,21 +77,20 @@ class App {
         };
 
         this.speechRecognition.onerror = (event) => {
+            // Filter out errors that are normal during manual restarting
+            if (event.error === 'no-speech' || event.error === 'aborted') return;
+            
             console.error('Speech Recognition Error:', event.error);
-            // Ignore common errors in manual loop mode (no-speech/aborted)
-            const ignoredErrors = ['no-speech', 'aborted'];
-            if (!ignoredErrors.includes(event.error)) {
-                this.statusText.innerText = `Error: ${event.error}`;
-            }
+            this.statusText.innerText = `Error: ${event.error}`;
         };
         
+        // Robust restart loop
         this.speechRecognition.onend = () => {
-            // Restart if we are still recording (Manual Loop)
             if (this.recording) {
                 try {
                     this.speechRecognition.start();
                 } catch (e) {
-                    // Silently fail if already started
+                    // Ignore start errors (e.g. if already started)
                 }
             }
         };
@@ -144,20 +136,15 @@ class App {
         this.updateLivePreview('');
     }
 
-    updateLivePreview(interimText) {
+    updateLivePreview(text) {
         if (!this.liveTranscript) return;
         
-        if (this.recording) {
-            const displayHeader = this.sessionTranscriptText.trim();
-            const fullText = (displayHeader ? displayHeader + " " : "") + interimText;
-            
-            if (fullText.trim()) {
-                this.liveTranscript.innerText = fullText;
-                this.liveTranscript.style.fontStyle = 'normal';
-            } else {
-                this.liveTranscript.innerText = "Listening... (Speak clearly)";
-                this.liveTranscript.style.fontStyle = 'italic';
-            }
+        if (text) {
+            this.liveTranscript.innerText = text;
+            this.liveTranscript.style.fontStyle = 'normal';
+        } else if (this.recording) {
+            this.liveTranscript.innerText = "Listening... (Speak clearly)";
+            this.liveTranscript.style.fontStyle = 'italic';
         } else {
             this.liveTranscript.innerText = "Ready to transcribe...";
             this.liveTranscript.style.fontStyle = 'italic';
@@ -201,7 +188,6 @@ class App {
 
             this.mediaRecorder = new MediaRecorder(stream);
             this.audioChunks = [];
-            this.sessionTranscriptText = "";
             this.recordedData = {
                 transcript: [],
                 pitchHistory: [],
@@ -276,18 +262,17 @@ class App {
     async stopRecording() {
         if (!this.recording) return;
 
-        this.recording = false; // Mark as stopped first to prevent loop restart in onend
+        // Update flag first so onend doesn't restart
+        this.recording = false;
+
         clearInterval(this.pitchInterval);
         this.sounds.stop.play();
         
         // Stop recorders
-        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-            this.mediaRecorder.stop();
-        }
+        this.mediaRecorder.stop();
         this.speechRecognition.stop();
-        if (this.pitchAnalyzer) {
-            this.pitchAnalyzer.stop();
-        }
+        this.pitchAnalyzer.stop();
+        
         this.recordBtn.classList.remove('recording');
         this.micIcon.setAttribute('data-lucide', 'mic');
         createIcons({ icons: { Mic } });
