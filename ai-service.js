@@ -5,85 +5,102 @@
 export class AIService {
     static async analyzeVoiceData(data) {
         console.log("AI Service: Received raw data for analysis", data);
-        
-        // Artificial delay to simulate "AI processing"
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        const { transcript } = data;
 
-        const { transcript, pitchHistory } = data;
-        
         if (transcript.length === 0) return [];
 
-        // Simple Diarization Logic based on Pitch Thresholds:
-        // We cluster segments into 'Speaker 1' or 'Speaker 2' based on average frequency.
-        // Usually, male voices are ~85-180Hz and female ~165-255Hz.
-        // For simplicity, we'll just look at the distribution of captured pitches.
+        // Prepare data for the LLM
+        // We summarize the collected data to keep tokens low but info high
+        const segmentsSummary = transcript.map((s, i) => {
+            return `Segment ${i + 1}:
+  Text: "${s.text}"
+  Avg Pitch: ${Math.round(s.pitch)} Hz
+  Pitch Range: ${Math.round(s.pitchRange[0])}-${Math.round(s.pitchRange[1])} Hz`;
+        }).join('\n\n');
 
-        // Assign pitch to each transcript segment by finding the closest match in history
-        const processedSegments = transcript.map(segment => {
-            const words = segment.text.split(' ').map(word => {
-                // Attach approximate frequency info to word
-                return {
-                    text: word,
-                    pitch: segment.pitch || 0
-                };
+        const systemPrompt = `You are a sophisticated Audio Analysis AI.
+Your goal is to perform "Speaker Diarization" (identifying who spoke what) based on transcription and pitch data provided.
+
+Context:
+- Pitch usually helps distinguish speakers (e.g., lower vs higher voices).
+- Significant changes in Average Pitch often indicate a new speaker.
+- Typical Male fundamental frequency: 85-180 Hz.
+- Typical Female fundamental frequency: 165-255 Hz.
+- Use context clues in the text (questions/answers) combined with pitch shifts to assign Speaker IDs.
+
+Instructions:
+1. Analyze the provided Segments.
+2. Assign a "speakerId" (1, 2, 3...) to each segment.
+3. If pitch is very similar between segments, it's likely the same speaker.
+4. If pitch jumps significantly (e.g. > 40Hz difference), it's likely a new speaker.
+5. Return the result as a JSON object containing a "segments" array.
+6. Each segment in the output MUST match the text of the input, but include "speakerId" and "reasoning".
+
+Output Schema:
+{
+  "segments": [
+    {
+      "text": string,
+      "speakerId": number,
+      "avgPitch": number,
+      "reasoning": string
+    }
+  ]
+}`;
+
+        try {
+            const completion = await websim.chat.completions.create({
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: `Here is the raw data captured from the recording session:\n\n${segmentsSummary}\n\nPerform diarization and return JSON.` }
+                ],
+                json: true
             });
 
-            return {
-                ...segment,
-                words,
-                avgPitch: segment.pitch
-            };
-        });
+            const response = JSON.parse(completion.content);
+            
+            // Post-processing to match the format expected by the UI (words array)
+            return this.formatForUI(response.segments);
 
-        // Determine if there are multiple speakers based on pitch variance
-        const validPitches = processedSegments.map(s => s.avgPitch).filter(p => p > 50);
-        
-        let diarizedResult = [];
-        
-        if (validPitches.length > 0) {
-            const avg = validPitches.reduce((a, b) => a + b, 0) / validPitches.length;
-            
-            // Heuristic: if a segment is more than 15% away from average, 
-            // and we have enough samples, potentially a different speaker.
-            // In a real AI, this would be a clustering algorithm on embeddings.
-            
-            processedSegments.forEach((segment, index) => {
-                let speakerId = 1;
-                
-                // If pitch exists and differs significantly from the average of the first speaker,
-                // or switches significantly from the previous segment.
-                if (index > 0) {
-                    const prevSegment = processedSegments[index - 1];
-                    const pitchDiff = Math.abs(segment.avgPitch - prevSegment.avgPitch);
-                    
-                    // If difference is > 40Hz, likely a different person/intonation
-                    if (pitchDiff > 40 && segment.avgPitch > 50 && prevSegment.avgPitch > 50) {
-                        speakerId = (prevSegment.speakerId === 1) ? 2 : 1;
-                    } else {
-                        speakerId = prevSegment.speakerId || 1;
-                    }
-                }
-                
-                segment.speakerId = speakerId;
-                diarizedResult.push(segment);
-            });
-        } else {
-            // Default to speaker 1 if no pitch data
-            diarizedResult = processedSegments.map(s => ({ ...s, speakerId: 1 }));
+        } catch (error) {
+            console.error("AI Analysis failed:", error);
+            // Fallback to local heuristic if LLM fails
+            return this.heuristicFallback(transcript);
         }
+    }
 
-        // Merge consecutive segments from the same speaker
+    static formatForUI(segments) {
+        // Convert simple segment objects back to the word-level structure the UI expects
+        return segments.map(seg => ({
+            speakerId: seg.speakerId,
+            avgPitch: seg.avgPitch,
+            text: seg.text,
+            words: seg.text.split(' ').map(w => ({
+                text: w,
+                pitch: seg.avgPitch // Distribute avg pitch to words as we don't have per-word alignment from LLM
+            })),
+            reasoning: seg.reasoning
+        }));
+    }
+
+    static heuristicFallback(transcript) {
+        // Simple threshold-based logic if AI fails
+        const processed = transcript.map(t => ({
+            ...t,
+            speakerId: t.pitch > 165 ? 2 : 1, // Crude gender/pitch split
+            words: t.text.split(' ').map(w => ({ text: w, pitch: t.pitch }))
+        }));
+
+        // Merge consecutive
         const merged = [];
-        diarizedResult.forEach(current => {
+        processed.forEach(current => {
             const last = merged[merged.length - 1];
             if (last && last.speakerId === current.speakerId) {
                 last.words.push(...current.words);
-                last.avgPitch = (last.avgPitch + current.avgPitch) / 2;
             } else {
                 merged.push({ ...current });
             }
         });
-
         return merged;
     }
 }
