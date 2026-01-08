@@ -12,10 +12,13 @@ export class AIService {
         // Prepare data for the LLM
         // We summarize the collected data to keep tokens low but info high
         const segmentsSummary = transcript.map((s, i) => {
+            const avg = isNaN(s.pitch) ? 0 : Math.round(s.pitch);
+            const min = isNaN(s.pitchRange[0]) ? 0 : Math.round(s.pitchRange[0]);
+            const max = isNaN(s.pitchRange[1]) ? 0 : Math.round(s.pitchRange[1]);
             return `Segment ${i + 1}:
   Text: "${s.text}"
-  Avg Pitch: ${Math.round(s.pitch)} Hz
-  Pitch Range: ${Math.round(s.pitchRange[0])}-${Math.round(s.pitchRange[1])} Hz`;
+  Avg Pitch: ${avg} Hz
+  Pitch Range: ${min}-${max} Hz`;
         }).join('\n\n');
 
         const systemPrompt = `You are a sophisticated Audio Analysis AI.

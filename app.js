@@ -10,6 +10,7 @@ class App {
         this.mediaRecorder = null;
         this.audioChunks = [];
         this.speechRecognition = null;
+        this.currentInterimText = '';
         this.recordedData = {
             transcript: [],
             pitchHistory: [],
@@ -73,6 +74,7 @@ class App {
                 }
             }
 
+            this.currentInterimText = interimTranscript;
             this.updateLivePreview(interimTranscript);
         };
 
@@ -188,6 +190,7 @@ class App {
 
             this.mediaRecorder = new MediaRecorder(stream);
             this.audioChunks = [];
+            this.currentInterimText = '';
             this.recordedData = {
                 transcript: [],
                 pitchHistory: [],
@@ -197,27 +200,9 @@ class App {
 
             // Define handlers immediately to prevent race conditions where stop() is called before onstop is defined
             this.mediaRecorder.ondataavailable = (e) => this.audioChunks.push(e.data);
-            this.mediaRecorder.onstop = async () => {
-                console.log("MediaRecorder stopped, starting analysis...");
-                
-                // Check if we actually captured any text
-                if (this.recordedData.transcript.length === 0) {
-                    this.statusText.innerText = "No speech text detected.";
-                    this.liveTranscript.innerText = "No speech captured. Try again closer to the mic.";
-                    this.analysisBadge.classList.add('hidden');
-                    return;
-                }
-
-                try {
-                    const results = await AIService.analyzeVoiceData(this.recordedData);
-                    this.sounds.done.play();
-                    this.displayFinalResults(results);
-                    this.statusText.innerText = "Analysis Complete";
-                    this.analysisBadge.classList.remove('hidden');
-                } catch (err) {
-                    console.error("Analysis error:", err);
-                    this.statusText.innerText = "Analysis Failed";
-                }
+            this.mediaRecorder.onstop = () => {
+                console.log("MediaRecorder stopped.");
+                // Analysis is now triggered explicitly in stopRecording to ensure synchronization with SpeechRecognition
             };
 
             // Start high-frequency pitch tracking loop
@@ -268,18 +253,54 @@ class App {
         clearInterval(this.pitchInterval);
         this.sounds.stop.play();
         
+        this.statusText.innerText = "Finalizing capture...";
+        
         // Stop recorders
-        this.mediaRecorder.stop();
+        if (this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
         this.speechRecognition.stop();
         this.pitchAnalyzer.stop();
         
+        // Wait briefly for any final speech events to trickle in from the engine
+        await new Promise(resolve => setTimeout(resolve, 800));
+
+        // Flush any remaining interim text that wasn't finalized by the engine
+        if (this.currentInterimText && this.currentInterimText.trim().length > 0) {
+            console.log("Flushing remaining interim text:", this.currentInterimText);
+            this.processFinalSegment(this.currentInterimText);
+            this.currentInterimText = '';
+        }
+
+        this.finalizeSession();
+    }
+
+    async finalizeSession() {
         this.recordBtn.classList.remove('recording');
         this.micIcon.setAttribute('data-lucide', 'mic');
         createIcons({ icons: { Mic } });
         
-        this.statusText.innerText = "Sending data to AI...";
+        this.statusText.innerText = "Analyzing data...";
         this.liveTranscript.classList.remove('active');
         this.liveTranscript.innerText = "Processing...";
+
+        // Check if we actually captured any text
+        if (this.recordedData.transcript.length === 0) {
+            this.statusText.innerText = "No speech text detected.";
+            this.liveTranscript.innerText = "No speech captured. Try speaking louder or closer.";
+            this.analysisBadge.classList.add('hidden');
+            return;
+        }
+
+        try {
+            const results = await AIService.analyzeVoiceData(this.recordedData);
+            this.sounds.done.play();
+            this.displayFinalResults(results);
+            this.statusText.innerText = "Analysis Complete";
+            this.analysisBadge.classList.remove('hidden');
+        } catch (err) {
+            console.error("Analysis error:", err);
+            this.statusText.innerText = "Analysis Failed";
+            this.liveTranscript.innerText = "Error analyzing data.";
+        }
     }
 
     displayFinalResults(diarization) {
