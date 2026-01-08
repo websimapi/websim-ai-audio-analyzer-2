@@ -52,13 +52,20 @@ Output Schema:
 }`;
 
         try {
-            const completion = await websim.chat.completions.create({
+            const completionPromise = websim.chat.completions.create({
                 messages: [
                     { role: "system", content: systemPrompt },
                     { role: "user", content: `Here is the raw data captured from the recording session:\n\n${segmentsSummary}\n\nPerform diarization and return JSON.` }
                 ],
                 json: true
             });
+
+            // 15 second timeout to prevent "getting stuck"
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error("Analysis timed out")), 15000)
+            );
+
+            const completion = await Promise.race([completionPromise, timeoutPromise]);
 
             // Clean potential markdown fences from the response before parsing
             let content = completion.content.replace(/```json\n?|\n?```/g, '').trim();

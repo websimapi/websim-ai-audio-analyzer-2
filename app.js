@@ -11,6 +11,7 @@ class App {
         this.audioChunks = [];
         this.speechRecognition = null;
         this.currentInterimText = '';
+        this.phraseStartTime = null;
         this.recordedData = {
             transcript: [],
             pitchHistory: [],
@@ -55,22 +56,34 @@ class App {
         }
 
         this.speechRecognition = new SpeechRecognition();
-        // Set continuous to false to prevent buffer duplication bugs (Manual Continuous Loop strategy)
-        this.speechRecognition.continuous = false;
+        // Continuous true for smoother capture
+        this.speechRecognition.continuous = true;
         this.speechRecognition.interimResults = true;
         this.speechRecognition.lang = 'en-US';
 
+        this.speechRecognition.onstart = () => {
+            console.log('Speech Recognition Started');
+            this.statusText.innerText = "Listening...";
+        };
+
         this.speechRecognition.onresult = (event) => {
             let interimTranscript = '';
-
+            
+            // Loop through results starting from resultIndex
             for (let i = event.resultIndex; i < event.results.length; ++i) {
                 if (event.results[i].isFinal) {
                     const text = event.results[i][0].transcript.trim();
                     if (text) {
                         this.processFinalSegment(text);
+                        // Reset phrase start time after committing
+                        this.phraseStartTime = null;
                     }
                 } else {
                     interimTranscript += event.results[i][0].transcript;
+                    // Start tracking time when we first hear interim results for a phrase
+                    if (!this.phraseStartTime && interimTranscript.length > 0) {
+                        this.phraseStartTime = Date.now();
+                    }
                 }
             }
 
@@ -79,20 +92,21 @@ class App {
         };
 
         this.speechRecognition.onerror = (event) => {
-            // Filter out errors that are normal during manual restarting
-            if (event.error === 'no-speech' || event.error === 'aborted') return;
-            
             console.error('Speech Recognition Error:', event.error);
-            this.statusText.innerText = `Error: ${event.error}`;
+            if (event.error === 'no-speech') return; // Ignore silence
+            if (event.error === 'aborted') return;
+            
+            this.statusText.innerText = `Speech Error: ${event.error}`;
         };
         
-        // Robust restart loop
         this.speechRecognition.onend = () => {
+            // Only restart if we are recording and it wasn't an intentional stop
             if (this.recording) {
+                console.log('Speech recognition ended unexpectedly, restarting...');
                 try {
                     this.speechRecognition.start();
                 } catch (e) {
-                    // Ignore start errors (e.g. if already started)
+                    console.warn("Failed to restart speech recognition", e);
                 }
             }
         };
@@ -100,10 +114,19 @@ class App {
 
     processFinalSegment(text) {
         const now = Date.now();
-        // Determine time window for this segment
-        // Start time is either the beginning of recording or end of last segment
-        const startTime = this.lastSegmentEndTime || this.recordedData.startTime;
+        
+        // Use the tracked start time of the phrase, or fallback
+        let startTime = this.phraseStartTime;
+        if (!startTime || startTime < this.lastSegmentEndTime) {
+            startTime = this.lastSegmentEndTime || (now - 1000);
+        }
+        
+        // Safety clamp
+        if (startTime < this.recordedData.startTime) startTime = this.recordedData.startTime;
+
         this.lastSegmentEndTime = now;
+        // In case phraseStartTime was very old, clamp it to not be too far back (e.g. 10s)
+        if (now - startTime > 10000) startTime = now - 5000;
 
         // Filter pitch history for this time window
         const segmentPitches = this.recordedData.pitchHistory.filter(
@@ -184,6 +207,10 @@ class App {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (this.audioContext.state === 'suspended') {
+                await this.audioContext.resume();
+            }
+
             this.pitchAnalyzer = new PitchAnalyzer(this.audioContext, stream, this.visualizer, (pitch) => {
                 this.pitchDisplay.innerText = `${Math.round(pitch)} Hz`;
             });
@@ -191,6 +218,7 @@ class App {
             this.mediaRecorder = new MediaRecorder(stream);
             this.audioChunks = [];
             this.currentInterimText = '';
+            this.phraseStartTime = null;
             this.recordedData = {
                 transcript: [],
                 pitchHistory: [],
