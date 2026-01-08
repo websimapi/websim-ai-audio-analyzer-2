@@ -15,6 +15,7 @@ class App {
             pitchHistory: [],
             startTime: 0
         };
+        this.sessionTranscriptText = "";
 
         this.initUI();
         this.initSpeechRecognition();
@@ -54,49 +55,50 @@ class App {
         }
 
         this.speechRecognition = new SpeechRecognition();
-        this.speechRecognition.continuous = true;
+        this.speechRecognition.continuous = false; // Manual Continuous Loop strategy
         this.speechRecognition.interimResults = true;
         this.speechRecognition.lang = 'en-US';
 
         this.speechRecognition.onresult = (event) => {
             let interimTranscript = '';
-            let hasFinal = false;
+            let finalInEvent = '';
 
             for (let i = event.resultIndex; i < event.results.length; ++i) {
+                const text = event.results[i][0].transcript;
                 if (event.results[i].isFinal) {
-                    const text = event.results[i][0].transcript.trim();
-                    if (text) {
-                        this.processFinalSegment(text);
-                        hasFinal = true;
-                    }
+                    finalInEvent += text;
                 } else {
-                    interimTranscript += event.results[i][0].transcript;
+                    interimTranscript += text;
                 }
             }
 
-            // Update UI: if we have interim text, show it. 
-            // If we just processed a final segment and have no new interim, 
-            // leave it briefly or let the clearing logic handle it, but avoid stuck "Listening..."
-            if (interimTranscript || !hasFinal) {
-                this.updateLivePreview(interimTranscript);
+            if (finalInEvent) {
+                const trimmed = finalInEvent.trim();
+                if (trimmed) {
+                    this.sessionTranscriptText += " " + trimmed;
+                    this.processFinalSegment(trimmed);
+                }
             }
+
+            this.updateLivePreview(interimTranscript);
         };
 
         this.speechRecognition.onerror = (event) => {
             console.error('Speech Recognition Error:', event.error);
-            // Ignore no-speech error as it happens frequently in silence
-            if (event.error !== 'no-speech') {
+            // Ignore common errors in manual loop mode (no-speech/aborted)
+            const ignoredErrors = ['no-speech', 'aborted'];
+            if (!ignoredErrors.includes(event.error)) {
                 this.statusText.innerText = `Error: ${event.error}`;
             }
         };
         
-        // Ensure it restarts if it stops unexpectedly while recording
         this.speechRecognition.onend = () => {
+            // Restart if we are still recording (Manual Loop)
             if (this.recording) {
                 try {
                     this.speechRecognition.start();
                 } catch (e) {
-                    console.log("Recognition restart suppressed");
+                    // Silently fail if already started
                 }
             }
         };
@@ -142,15 +144,20 @@ class App {
         this.updateLivePreview('');
     }
 
-    updateLivePreview(text) {
+    updateLivePreview(interimText) {
         if (!this.liveTranscript) return;
         
-        if (text) {
-            this.liveTranscript.innerText = text;
-            this.liveTranscript.style.fontStyle = 'normal';
-        } else if (this.recording) {
-            this.liveTranscript.innerText = "Listening... (Speak clearly)";
-            this.liveTranscript.style.fontStyle = 'italic';
+        if (this.recording) {
+            const displayHeader = this.sessionTranscriptText.trim();
+            const fullText = (displayHeader ? displayHeader + " " : "") + interimText;
+            
+            if (fullText.trim()) {
+                this.liveTranscript.innerText = fullText;
+                this.liveTranscript.style.fontStyle = 'normal';
+            } else {
+                this.liveTranscript.innerText = "Listening... (Speak clearly)";
+                this.liveTranscript.style.fontStyle = 'italic';
+            }
         } else {
             this.liveTranscript.innerText = "Ready to transcribe...";
             this.liveTranscript.style.fontStyle = 'italic';
@@ -194,6 +201,7 @@ class App {
 
             this.mediaRecorder = new MediaRecorder(stream);
             this.audioChunks = [];
+            this.sessionTranscriptText = "";
             this.recordedData = {
                 transcript: [],
                 pitchHistory: [],
@@ -268,15 +276,18 @@ class App {
     async stopRecording() {
         if (!this.recording) return;
 
+        this.recording = false; // Mark as stopped first to prevent loop restart in onend
         clearInterval(this.pitchInterval);
         this.sounds.stop.play();
         
-        // Stop recorders - this triggers onstop defined in startRecording
-        this.mediaRecorder.stop();
+        // Stop recorders
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+            this.mediaRecorder.stop();
+        }
         this.speechRecognition.stop();
-        this.pitchAnalyzer.stop();
-        
-        this.recording = false;
+        if (this.pitchAnalyzer) {
+            this.pitchAnalyzer.stop();
+        }
         this.recordBtn.classList.remove('recording');
         this.micIcon.setAttribute('data-lucide', 'mic');
         createIcons({ icons: { Mic } });
