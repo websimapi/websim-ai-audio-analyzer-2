@@ -60,21 +60,26 @@ class App {
 
         this.speechRecognition.onresult = (event) => {
             let interimTranscript = '';
-            
-            // Handle multiple results in the buffer
+            let hasFinal = false;
+
             for (let i = event.resultIndex; i < event.results.length; ++i) {
                 if (event.results[i].isFinal) {
                     const text = event.results[i][0].transcript.trim();
                     if (text) {
                         this.processFinalSegment(text);
+                        hasFinal = true;
                     }
                 } else {
                     interimTranscript += event.results[i][0].transcript;
                 }
             }
 
-            // Update UI with interim text
-            this.updateLivePreview(interimTranscript);
+            // Update UI: if we have interim text, show it. 
+            // If we just processed a final segment and have no new interim, 
+            // leave it briefly or let the clearing logic handle it, but avoid stuck "Listening..."
+            if (interimTranscript || !hasFinal) {
+                this.updateLivePreview(interimTranscript);
+            }
         };
 
         this.speechRecognition.onerror = (event) => {
@@ -144,7 +149,7 @@ class App {
             this.liveTranscript.innerText = text;
             this.liveTranscript.style.fontStyle = 'normal';
         } else if (this.recording) {
-            this.liveTranscript.innerText = "Listening...";
+            this.liveTranscript.innerText = "Listening... (Speak clearly)";
             this.liveTranscript.style.fontStyle = 'italic';
         } else {
             this.liveTranscript.innerText = "Ready to transcribe...";
@@ -185,7 +190,6 @@ class App {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
             this.pitchAnalyzer = new PitchAnalyzer(this.audioContext, stream, this.visualizer, (pitch) => {
                 this.pitchDisplay.innerText = `${Math.round(pitch)} Hz`;
-                // PitchAnalyzer callback is for UI updates mainly now
             });
 
             this.mediaRecorder = new MediaRecorder(stream);
@@ -196,6 +200,31 @@ class App {
                 startTime: Date.now()
             };
             this.lastSegmentEndTime = this.recordedData.startTime;
+
+            // Define handlers immediately to prevent race conditions where stop() is called before onstop is defined
+            this.mediaRecorder.ondataavailable = (e) => this.audioChunks.push(e.data);
+            this.mediaRecorder.onstop = async () => {
+                console.log("MediaRecorder stopped, starting analysis...");
+                
+                // Check if we actually captured any text
+                if (this.recordedData.transcript.length === 0) {
+                    this.statusText.innerText = "No speech text detected.";
+                    this.liveTranscript.innerText = "No speech captured. Try again closer to the mic.";
+                    this.analysisBadge.classList.add('hidden');
+                    return;
+                }
+
+                try {
+                    const results = await AIService.analyzeVoiceData(this.recordedData);
+                    this.sounds.done.play();
+                    this.displayFinalResults(results);
+                    this.statusText.innerText = "Analysis Complete";
+                    this.analysisBadge.classList.remove('hidden');
+                } catch (err) {
+                    console.error("Analysis error:", err);
+                    this.statusText.innerText = "Analysis Failed";
+                }
+            };
 
             // Start high-frequency pitch tracking loop
             this.pitchInterval = setInterval(() => {
@@ -209,12 +238,11 @@ class App {
                         });
                     }
                 }
-            }, 50); // Sample every 50ms
+            }, 50);
 
-            this.mediaRecorder.ondataavailable = (e) => this.audioChunks.push(e.data);
-            
             this.sounds.start.play();
             this.mediaRecorder.start();
+            
             try {
                 this.speechRecognition.start();
             } catch(e) { console.warn("Recog already started"); }
@@ -242,6 +270,8 @@ class App {
 
         clearInterval(this.pitchInterval);
         this.sounds.stop.play();
+        
+        // Stop recorders - this triggers onstop defined in startRecording
         this.mediaRecorder.stop();
         this.speechRecognition.stop();
         this.pitchAnalyzer.stop();
@@ -254,16 +284,6 @@ class App {
         this.statusText.innerText = "Sending data to AI...";
         this.liveTranscript.classList.remove('active');
         this.liveTranscript.innerText = "Processing...";
-
-        this.mediaRecorder.onstop = async () => {
-            // const audioBlob = new Blob(this.audioChunks, { type: 'audio/wav' });
-            // Send data to AI
-            const results = await AIService.analyzeVoiceData(this.recordedData);
-            this.sounds.done.play();
-            this.displayFinalResults(results);
-            this.statusText.innerText = "Analysis Complete";
-            this.analysisBadge.classList.remove('hidden');
-        };
     }
 
     displayFinalResults(diarization) {

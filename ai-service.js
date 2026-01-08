@@ -57,10 +57,13 @@ Output Schema:
                 json: true
             });
 
-            const response = JSON.parse(completion.content);
+            // Clean potential markdown fences from the response before parsing
+            let content = completion.content.replace(/```json\n?|\n?```/g, '').trim();
+            const response = JSON.parse(content);
             
             // Post-processing to match the format expected by the UI (words array)
-            return this.formatForUI(response.segments);
+            // Use fallback empty array if segments is missing
+            return this.formatForUI(response.segments || []);
 
         } catch (error) {
             console.error("AI Analysis failed:", error);
