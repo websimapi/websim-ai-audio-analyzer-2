@@ -10,8 +10,10 @@ class App {
         this.mediaRecorder = null;
         this.audioChunks = [];
         this.speechRecognition = null;
+        this.fullTranscript = '';
         this.currentInterimText = '';
         this.phraseStartTime = null;
+        this.recognitionActive = false;
         this.recordedData = {
             transcript: [],
             pitchHistory: [],
@@ -56,53 +58,68 @@ class App {
         }
 
         this.speechRecognition = new SpeechRecognition();
-        // Continuous true for smoother capture
-        this.speechRecognition.continuous = true;
+        // Robust pattern: single-utterance recognition with manual loop
+        this.speechRecognition.continuous = false;
         this.speechRecognition.interimResults = true;
         this.speechRecognition.lang = 'en-US';
 
         this.speechRecognition.onstart = () => {
-            console.log('Speech Recognition Started');
+            this.recognitionActive = true;
             this.statusText.innerText = "Listening...";
+            // If a phrase hasn't started yet, mark its start time
+            if (!this.phraseStartTime) {
+                this.phraseStartTime = Date.now();
+            }
         };
 
         this.speechRecognition.onresult = (event) => {
             let interimTranscript = '';
-            
-            // Loop through results starting from resultIndex
+
             for (let i = event.resultIndex; i < event.results.length; ++i) {
-                if (event.results[i].isFinal) {
-                    const text = event.results[i][0].transcript.trim();
-                    if (text) {
-                        this.processFinalSegment(text);
-                        // Reset phrase start time after committing
-                        this.phraseStartTime = null;
-                    }
+                const result = event.results[i];
+                const text = result[0].transcript.trim();
+                if (!text) continue;
+
+                if (result.isFinal) {
+                    // Append to running full transcript
+                    this.fullTranscript += (this.fullTranscript ? ' ' : '') + text;
+                    this.currentInterimText = '';
+                    // Commit this chunk as a segment with pitch alignment
+                    this.processFinalSegment(text);
+                    // Next phrase will get a new start time
+                    this.phraseStartTime = null;
                 } else {
-                    interimTranscript += event.results[i][0].transcript;
-                    // Start tracking time when we first hear interim results for a phrase
-                    if (!this.phraseStartTime && interimTranscript.length > 0) {
-                        this.phraseStartTime = Date.now();
-                    }
+                    interimTranscript += text + ' ';
                 }
             }
 
-            this.currentInterimText = interimTranscript;
-            this.updateLivePreview(interimTranscript);
+            this.currentInterimText = interimTranscript.trim();
+
+            // Start tracking time when we first hear interim results for a phrase
+            if (!this.phraseStartTime && this.currentInterimText.length > 0) {
+                this.phraseStartTime = Date.now();
+            }
+
+            const displayText = [
+                this.fullTranscript,
+                this.currentInterimText
+            ].filter(Boolean).join(' ');
+
+            this.updateLivePreview(displayText);
         };
 
         this.speechRecognition.onerror = (event) => {
             console.error('Speech Recognition Error:', event.error);
             if (event.error === 'no-speech') return; // Ignore silence
             if (event.error === 'aborted') return;
-            
+
             this.statusText.innerText = `Speech Error: ${event.error}`;
         };
-        
+
         this.speechRecognition.onend = () => {
-            // Only restart if we are recording and it wasn't an intentional stop
+            this.recognitionActive = false;
+            // Manual continuous loop: restart only while actively recording
             if (this.recording) {
-                console.log('Speech recognition ended unexpectedly, restarting...');
                 try {
                     this.speechRecognition.start();
                 } catch (e) {
@@ -217,6 +234,7 @@ class App {
 
             this.mediaRecorder = new MediaRecorder(stream);
             this.audioChunks = [];
+            this.fullTranscript = '';
             this.currentInterimText = '';
             this.phraseStartTime = null;
             this.recordedData = {
@@ -249,11 +267,14 @@ class App {
 
             this.sounds.start.play();
             this.mediaRecorder.start();
-            
+
+            // Start the first recognition cycle of the manual loop
             try {
                 this.speechRecognition.start();
-            } catch(e) { console.warn("Recog already started"); }
-            
+            } catch (e) {
+                console.warn("Speech recognition already started", e);
+            }
+
             this.recording = true;
             this.recordBtn.classList.add('recording');
             this.micIcon.setAttribute('data-lucide', 'square');
@@ -285,16 +306,24 @@ class App {
         
         // Stop recorders
         if (this.mediaRecorder.state !== 'inactive') this.mediaRecorder.stop();
-        this.speechRecognition.stop();
+        if (this.speechRecognition) {
+            try {
+                this.speechRecognition.stop();
+            } catch (e) {
+                console.warn("Error stopping recognition", e);
+            }
+        }
         this.pitchAnalyzer.stop();
-        
+
         // Wait briefly for any final speech events to trickle in from the engine
         await new Promise(resolve => setTimeout(resolve, 800));
 
         // Flush any remaining interim text that wasn't finalized by the engine
         if (this.currentInterimText && this.currentInterimText.trim().length > 0) {
             console.log("Flushing remaining interim text:", this.currentInterimText);
-            this.processFinalSegment(this.currentInterimText);
+            const flushed = this.currentInterimText.trim();
+            this.fullTranscript += (this.fullTranscript ? ' ' : '') + flushed;
+            this.processFinalSegment(flushed);
             this.currentInterimText = '';
         }
 
